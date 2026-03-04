@@ -12,25 +12,40 @@ DB_H5_PATHS = [
     Path("/home/lty/outputs/RealUAV/city1/netvlad/db/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/city2/netvlad/db/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/city3/netvlad/db/global-feats-netvlad.h5"),
-    Path("/home/lty/outputs/RealUAV/village1/netvlad/db/global-feats-netvlad.h5"),
-    Path("/home/lty/outputs/RealUAV/village2/netvlad/db/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/industry1/netvlad/db/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/industry2/netvlad/db/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/industry3/netvlad/db/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/park1/netvlad/db/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/rural1/netvlad/db/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/rural2/netvlad/db/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/rural3/netvlad/db/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/school/netvlad/db/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/suburbs1/netvlad/db/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/suburbs2/netvlad/db/global-feats-netvlad.h5"),
-    Path("/home/lty/outputs/RealUAV/industry1/netvlad/db/global-feats-netvlad.h5"),
-    Path("/home/lty/outputs/RealUAV/industry2/netvlad/db/global-feats-netvlad.h5"),
-    Path("/home/lty/outputs/RealUAV/industry3/netvlad/db/global-feats-netvlad.h5"),
-    Path("/home/lty/outputs/RealUAV/park1/netvlad/db/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/village1/netvlad/db/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/village2/netvlad/db/global-feats-netvlad.h5"),
+
+
+
 ]
 
 # 多个 Query H5，结构与 DB_H5_PATHS 类似，方便在实验里统一合并
 QUERY_H5_PATHS = [
+    Path("/home/lty/outputs/RealUAV/city1/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/city2/netvlad/query/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/city3/netvlad/query/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/industry1/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/industry2/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/industry3/netvlad/query/global-feats-netvlad.h5"),
     Path("/home/lty/outputs/RealUAV/park1/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/rural1/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/rural2/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/rural3/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/school/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/suburbs1/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/suburbs2/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/village1/netvlad/query/global-feats-netvlad.h5"),
+    Path("/home/lty/outputs/RealUAV/village2/netvlad/query/global-feats-netvlad.h5"),
 ]
 
 
