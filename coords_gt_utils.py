@@ -307,11 +307,13 @@ def get_gt_9_for_trajectory(
     n_query_expected: int,
     scene_name: str = "",
     debug_first_frame: bool = True,
-) -> List[Set[int]]:
+) -> tuple:
     """
     对一条轨迹的每一帧，根据 uav_infos 的经纬度得到「包含该点的子图 + 方圆 5x5 邻域」共 25 张真值对应的全局 DB 索引。
     约定：uav_infos 第 i 行对应该轨迹第 i 帧 query（行序与 query 顺序一致）。
-    返回 list of set，长度严格为 n_query_expected；检索结果命中该集合内任一张即算正确。
+    返回 (list_of_sets, list_of_ordered_lists)：
+      - list_of_sets: 长度 n_query_expected，检索命中集合内任一张即算正确；
+      - list_of_ordered_lists: 长度 n_query_expected，每帧的 25 张真值按「中心子图第一、其余按到 query 坐标距离由近到远」排序，用于保存 gt_25.txt。
     debug_first_frame=True 时会对第一帧打印：geotransform、EPSG、第一张图坐标、转大图坐标等。
     """
     lats, lons = load_uav_infos(Path(uav_infos_path))
@@ -323,20 +325,21 @@ def get_gt_9_for_trajectory(
         )
     n_use = min(n_csv, n_query_expected)
     if n_use == 0:
-        return [set() for _ in range(n_query_expected)]
+        return ([set() for _ in range(n_query_expected)], [[] for _ in range(n_query_expected)])
 
     gt_tuple, _ = get_geotransform_and_srs(Path(mapbox_path))
     if gt_tuple is None:
-        return [set() for _ in range(n_query_expected)]
+        return ([set() for _ in range(n_query_expected)], [[] for _ in range(n_query_expected)])
     epsg = f"EPSG:{MAP_EPSG}"
 
     tile_wh = get_tile_size_from_tif(Path(tif_dir))
     if tile_wh is None:
-        return [set() for _ in range(n_query_expected)]
+        return ([set() for _ in range(n_query_expected)], [[] for _ in range(n_query_expected)])
     tile_w, tile_h = tile_wh
 
     startxy_to_local = _build_startxy_to_local_index(scene_db_names)
     result = []
+    result_ordered = []
     x_geo, y_geo = None, None
     for i in range(n_use):
         if i == 0 and debug_first_frame:
@@ -346,18 +349,15 @@ def get_gt_9_for_trajectory(
         else:
             px, py = lonlat_to_pixel(lons[i], lats[i], gt_tuple, None)
 
-        best_key = None
-        best_dist = float("inf")
-        for (sx, sy) in startxy_to_local:
-            if sx <= px < sx + tile_w and sy <= py < sy + tile_h:
-                best_key = (sx, sy)
-                break
-            d = (px - (sx + tile_w / 2)) ** 2 + (py - (sy + tile_h / 2)) ** 2
-            if d < best_dist:
-                best_dist = d
-                best_key = (sx, sy)
-        if best_key is None:
+        # 直接按到 query 坐标 (px, py) 的瓦片中心距离排序，取最近的 25 个子图作为 GT（有序）
+        def _dist_to_tile_center(nx: int, ny: int) -> float:
+            cx = nx + tile_w / 2
+            cy = ny + tile_h / 2
+            return (px - cx) ** 2 + (py - cy) ** 2
+
+        if not startxy_to_local:
             result.append(set())
+            result_ordered.append([])
             if i == 0 and debug_first_frame:
                 _print_first_frame_debug(
                     scene_name, gt_tuple, epsg,
@@ -365,23 +365,25 @@ def get_gt_9_for_trajectory(
                     tile_w, tile_h, None, set(), scene_db_names, global_db_start,
                 )
             continue
-        sx, sy = best_key
-        neighbors = _neighbor_startxy(sx, sy)
-        global_indices = set()
-        for (nx, ny) in neighbors:
-            local_idx = startxy_to_local.get((nx, ny))
-            if local_idx is not None:
-                global_indices.add(global_db_start + local_idx)
+        sorted_tiles = sorted(
+            startxy_to_local.keys(),
+            key=lambda t: _dist_to_tile_center(t[0], t[1]),
+        )[:25]
+        ordered_indices = [global_db_start + startxy_to_local[(nx, ny)] for (nx, ny) in sorted_tiles]
+        global_indices = set(ordered_indices)
         result.append(global_indices)
+        result_ordered.append(ordered_indices)
+        best_key = sorted_tiles[0] if sorted_tiles else None
         if i == 0 and debug_first_frame:
             _print_first_frame_debug(
                 scene_name, gt_tuple, epsg,
                 lats[i], lons[i], x_geo, y_geo, px, py,
-                tile_w, tile_h, (sx, sy), global_indices, scene_db_names, global_db_start,
+                tile_w, tile_h, best_key, global_indices, scene_db_names, global_db_start,
             )
     while len(result) < n_query_expected:
         result.append(set())
-    return result[:n_query_expected]
+        result_ordered.append([])
+    return result[:n_query_expected], result_ordered[:n_query_expected]
 
 
 def _print_first_frame_debug(
@@ -427,8 +429,8 @@ def _print_first_frame_debug(
     print(f"  tile_w = {tile_w}, tile_h = {tile_h}")
     if best_key is not None:
         sx, sy = best_key
-        print(f"包含 (px,py) 的子图左上角 startx, starty = {sx}, {sy}")
-        print("该子图 + 方圆 5x5 邻域对应的全局 DB 索引 (25 张真值):")
+        print(f"距离 query 坐标最近的子图左上角 startx, starty = {sx}, {sy}")
+        print("距离 query 坐标最近的 25 张子图（按距离排序）对应的全局 DB 索引:")
         g_sorted = sorted(global_indices)
         print(f"  {g_sorted}")
         print("对应的 db_names 示例 (前 3 个):")
@@ -447,18 +449,19 @@ def build_gt_9_for_all_trajectories(
     db_names: List[str],
     datasets_base: Optional[Path] = None,
     verbose: bool = True,
-) -> List[Set[int]]:
+) -> tuple:
     """
     为所有 query（按「合并后的 query 列表」顺序）生成 Recall@25 真值集合（每 query 方圆 25 张）。
     query_trajectory_ranges: [(scene_name, start, end), ...]
     db_scene_ranges: [(scene_name, start, end), ...]
-    返回 list of set，长度 = 总 query 数；检索命中该集合内任一张即算正确。
+    返回 (gt_9_list, gt_25_ordered)：gt_9_list 为 list of set（检索命中任一张即正确），gt_25_ordered 为 list of list（中心子图第一、其余按到 query 距离排序，用于保存 gt_25.txt）。
     """
     from scene_config import get_scene_paths, DATASETS_BASE
 
     base = Path(datasets_base) if datasets_base is not None else DATASETS_BASE
     db_scene_by_name = {name: (s, e) for name, s, e in db_scene_ranges}
     out = []
+    out_ordered = []
     if verbose:
         print("=== 坐标法 GT@25 各轨迹（未算出 GT 的会打印原因）===")
     for scene_name, q_start, q_end in query_trajectory_ranges:
@@ -466,6 +469,7 @@ def build_gt_9_for_all_trajectories(
         if scene_name not in db_scene_by_name:
             for _ in range(n_q):
                 out.append(set())
+                out_ordered.append([])
             if verbose:
                 print(f"  [{scene_name}] 共 {n_q} 条 query -> 未算 GT: 该场景不在 DB 中（db_scene_ranges 无此场景）")
             continue
@@ -481,12 +485,14 @@ def build_gt_9_for_all_trajectories(
         if not uav_ok:
             for _ in range(n_q):
                 out.append(set())
+                out_ordered.append([])
             if verbose:
                 print(f"  [{scene_name}] 共 {n_q} 条 query -> 未算 GT: uav_infos 不存在 ({uav_path})")
             continue
         if not map_ok or not tif_ok:
             for _ in range(n_q):
                 out.append(set())
+                out_ordered.append([])
             if verbose:
                 print(f"  [{scene_name}] 共 {n_q} 条 query -> 未算 GT: mapbox 存在={map_ok}, tif_dir 存在={tif_ok}")
             continue
@@ -494,6 +500,7 @@ def build_gt_9_for_all_trajectories(
         if gt_tuple is None:
             for _ in range(n_q):
                 out.append(set())
+                out_ordered.append([])
             if verbose:
                 print(f"  [{scene_name}] 共 {n_q} 条 query -> 未算 GT: 无法读取 mapbox 的 geotransform ({mapbox_path})")
             continue
@@ -501,11 +508,12 @@ def build_gt_9_for_all_trajectories(
         if tile_wh is None:
             for _ in range(n_q):
                 out.append(set())
+                out_ordered.append([])
             if verbose:
                 print(f"  [{scene_name}] 共 {n_q} 条 query -> 未算 GT: 无法从 tif 目录读取子图尺寸 ({tif_dir})")
             continue
         # 以上检查都通过，才调用 get_gt_9_for_trajectory（按轨迹 query 数 n_q 对齐；GT 为方圆 25 张）
-        list_of_sets = get_gt_9_for_trajectory(
+        list_of_sets, list_of_ordered = get_gt_9_for_trajectory(
             uav_path,
             scene_db_names,
             mapbox_path,
@@ -517,10 +525,11 @@ def build_gt_9_for_all_trajectories(
         )
         n_with_gt = sum(1 for s in list_of_sets if len(s) > 0)
         out.extend(list_of_sets)
+        out_ordered.extend(list_of_ordered)
         if verbose:
             print(f"  [{scene_name}] 共 {n_q} 条 query -> 有 GT 的 {n_with_gt}/{n_q}")
     if verbose:
         total_q = sum(q_end - q_start for _, _, q_end in query_trajectory_ranges)
         total_gt = sum(1 for s in out if len(s) > 0)
         print(f"  -> 合计有 GT 的 query: {total_gt}/{len(out)}\n")
-    return out
+    return out, out_ordered
