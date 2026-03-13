@@ -13,6 +13,8 @@ DEFAULT_ALPHA_SIGMA = 0.3
 DEFAULT_EMISSION_SCALE = 5.0
 DEFAULT_EPSILON = 1e-12
 DEFAULT_WINDOW_SIZE = 3
+DEFAULT_TRANSITION_PENALTY_REF_PX = None
+DEFAULT_TRANSITION_PENALTY_WEIGHT = 0.0
 
 
 class OnlineHMM:
@@ -24,11 +26,15 @@ class OnlineHMM:
         delta_t=DEFAULT_DELTA_T,
         alpha_sigma=DEFAULT_ALPHA_SIGMA,
         epsilon=DEFAULT_EPSILON,
+        transition_penalty_ref_px=DEFAULT_TRANSITION_PENALTY_REF_PX,
+        transition_penalty_weight=DEFAULT_TRANSITION_PENALTY_WEIGHT,
         verbose=False,
     ):
         """
         database_coords: (N_db, 2) 每个 DB 子图的 2D 坐标，或 None 表示无坐标模式（均匀转移）
         K: 每帧候选数量
+        transition_penalty_ref_px: transition 软惩罚的距离归一化参考尺度；为 None 时关闭该项
+        transition_penalty_weight: transition 软惩罚权重，实际以 log_trans -= weight * (dist / ref_px)^2 叠加
         verbose: 是否打印每帧关键参数与中间结果（用于调试第一个场景）
         """
         self.coords = database_coords
@@ -38,6 +44,10 @@ class OnlineHMM:
         self.motion_radius = None if self.uav_speed is None else self.uav_speed * delta_t
         self.alpha_sigma = alpha_sigma
         self.epsilon = epsilon
+        self.transition_penalty_ref_px = (
+            None if transition_penalty_ref_px is None else float(transition_penalty_ref_px)
+        )
+        self.transition_penalty_weight = float(transition_penalty_weight)
         self.verbose = bool(verbose)
 
         self.prev_log_delta = None
@@ -75,10 +85,12 @@ class OnlineHMM:
         displacement=None,
         frame_speed=None,
         prev_best_global=None,
+        predicted_center=None,
     ):
         """
         displacement: (dx, dy) 可选，与 coords 同单位的位移；若提供则用 center = 上一帧中心 + displacement 作为期望位置。
         frame_speed: 当前帧真实速度（pixel/s）；若提供则用 frame_speed * delta_t 得到当前帧期望位移。
+        predicted_center: 可选，若提供则直接作为当前帧期望中心，用于转移与 transition 软惩罚。
         """
         M = len(prev_indices)
         N = len(curr_indices)
@@ -107,7 +119,10 @@ class OnlineHMM:
         if prev_best_global is None:
             prev_best_global = self.prev_best_global
 
-        if prev_best_global is not None:
+        if predicted_center is not None:
+            center = np.asarray(predicted_center, dtype=np.float64)
+            radius = 2 * motion_radius
+        elif prev_best_global is not None:
             center = np.array(self.coords[prev_best_global], dtype=np.float64)
             radius = 2 * motion_radius
             if displacement is not None:
@@ -123,19 +138,34 @@ class OnlineHMM:
         if self.verbose:
             print(f"    [transition] prev_best_global={prev_best_global}, center={center}, motion_radius={motion_radius:.4f}, radius={radius:.1f}, sigma={sigma:.4f}, displacement={displacement}, frame_speed={frame_speed}")
 
+        penalty_stats = []
         for i in range(M):
             for j in range(N):
+                dist_to_center = None
                 if center is not None:
-                    if np.any(np.isnan(center)) or np.linalg.norm(curr_coords[j] - center) > radius:
-                        continue
-                if displacement is not None and center is not None:
                     dist_to_center = np.linalg.norm(curr_coords[j] - center)
+                    if np.any(np.isnan(center)):
+                        continue
+                if center is not None and (displacement is not None or predicted_center is not None):
                     prob = np.exp(-(dist_to_center ** 2) / (2 * sigma ** 2)) + self.epsilon
                 else:
                     d = dists[i, j]
                     diff = d - motion_radius
                     prob = np.exp(-(diff ** 2) / (2 * sigma ** 2)) + self.epsilon
-                log_trans[i, j] = np.log(prob)
+                log_prob = np.log(prob)
+                if (
+                    center is not None
+                    and dist_to_center is not None
+                    and self.transition_penalty_weight > 0.0
+                    and self.transition_penalty_ref_px is not None
+                    and self.transition_penalty_ref_px > 0.0
+                ):
+                    penalty = self.transition_penalty_weight * (
+                        dist_to_center / self.transition_penalty_ref_px
+                    ) ** 2
+                    log_prob -= penalty
+                    penalty_stats.append(penalty)
+                log_trans[i, j] = log_prob
 
         if self.verbose:
             valid = np.isfinite(log_trans)
@@ -143,6 +173,14 @@ class OnlineHMM:
             if n_valid > 0:
                 vals = log_trans[valid]
                 print(f"    [transition] log_trans: shape={log_trans.shape}, 有效元素={n_valid}, max={np.max(vals):.4f}, min={np.min(vals):.4f}")
+                if penalty_stats:
+                    print(
+                        "    [transition-soft-penalty]"
+                        f" ref_px={self.transition_penalty_ref_px},"
+                        f" weight={self.transition_penalty_weight},"
+                        f" mean={np.mean(penalty_stats):.4f},"
+                        f" max={np.max(penalty_stats):.4f}"
+                    )
             else:
                 print(f"    [transition] log_trans: 全为 -inf")
 
@@ -152,7 +190,15 @@ class OnlineHMM:
         """将上一帧最优设为 global_idx，下一帧转移将以此位置为中心（用于 warm-start 等）。"""
         self.prev_best_global = global_idx
 
-    def update(self, candidate_indices, distances, return_top_k=10, displacement=None, frame_speed=None):
+    def update(
+        self,
+        candidate_indices,
+        distances,
+        return_top_k=10,
+        displacement=None,
+        frame_speed=None,
+        predicted_center=None,
+    ):
         """
         candidate_indices: (K,) 当前帧 Top-K 的 DB 索引
         distances: (K,) 当前帧与候选的距离，越小越相似
@@ -197,6 +243,7 @@ class OnlineHMM:
             candidate_indices,
             displacement=displacement,
             frame_speed=frame_speed,
+            predicted_center=predicted_center,
         )
 
         curr_log_delta = np.full(self.K, -np.inf)
@@ -227,6 +274,8 @@ class WindowViterbiHMM(OnlineHMM):
         delta_t=DEFAULT_DELTA_T,
         alpha_sigma=DEFAULT_ALPHA_SIGMA,
         epsilon=DEFAULT_EPSILON,
+        transition_penalty_ref_px=DEFAULT_TRANSITION_PENALTY_REF_PX,
+        transition_penalty_weight=DEFAULT_TRANSITION_PENALTY_WEIGHT,
         window_size=DEFAULT_WINDOW_SIZE,
         verbose=False,
     ):
@@ -237,6 +286,8 @@ class WindowViterbiHMM(OnlineHMM):
             delta_t=delta_t,
             alpha_sigma=alpha_sigma,
             epsilon=epsilon,
+            transition_penalty_ref_px=transition_penalty_ref_px,
+            transition_penalty_weight=transition_penalty_weight,
             verbose=verbose,
         )
         self.window_size = max(1, int(window_size))
@@ -251,12 +302,21 @@ class WindowViterbiHMM(OnlineHMM):
         super().override_prev_best(global_idx)
         self._clear_window()
 
-    def _append_frame(self, candidate_indices, distances, displacement=None, frame_speed=None, metadata=None):
+    def _append_frame(
+        self,
+        candidate_indices,
+        distances,
+        displacement=None,
+        frame_speed=None,
+        predicted_center=None,
+        metadata=None,
+    ):
         frame = {
             "candidate_indices": np.asarray(candidate_indices, dtype=np.int64),
             "distances": np.asarray(distances, dtype=np.float64),
             "displacement": displacement,
             "frame_speed": frame_speed,
+            "predicted_center": predicted_center,
             "metadata": metadata or {},
         }
         self._frames.append(frame)
@@ -288,6 +348,7 @@ class WindowViterbiHMM(OnlineHMM):
                         displacement=frame["displacement"],
                         frame_speed=frame["frame_speed"],
                         prev_best_global=anchor_best_global,
+                        predicted_center=frame["predicted_center"],
                     )[0]
                     curr_delta = log_emission + log_prior
                 else:
@@ -305,6 +366,7 @@ class WindowViterbiHMM(OnlineHMM):
                 displacement=frame["displacement"],
                 frame_speed=frame["frame_speed"],
                 prev_best_global=local_prev_best,
+                predicted_center=frame["predicted_center"],
             )
             values = prev_delta[:, None] + log_trans
             curr_delta = np.max(values, axis=0) + log_emission
@@ -342,6 +404,7 @@ class WindowViterbiHMM(OnlineHMM):
         return_top_k=10,
         displacement=None,
         frame_speed=None,
+        predicted_center=None,
         metadata=None,
         return_debug=False,
     ):
@@ -352,6 +415,7 @@ class WindowViterbiHMM(OnlineHMM):
             distances,
             displacement=displacement,
             frame_speed=frame_speed,
+            predicted_center=predicted_center,
             metadata=metadata,
         )
         ranked, debug = self._decode_window(return_top_k=return_top_k)
@@ -370,6 +434,7 @@ class WindowViterbiHMM(OnlineHMM):
             print(f"  extra_neighbors = {extra_neighbors}")
             print(f"  displacement = {displacement}")
             print(f"  frame_speed = {frame_speed}")
+            print(f"  predicted_center = {predicted_center}")
             if ranked:
                 print(f"  Window HMM 输出 top-1 = {ranked[0]}, top-{min(3, len(ranked))} = {ranked[:min(3, len(ranked))]}")
                 print(f"  best_path = {debug['best_path']}")

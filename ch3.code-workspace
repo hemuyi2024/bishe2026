@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "../../ch4"
+		},
+		{
+			"path": "../scene_match_banqiao"
 		}
 	],
 	"settings": {}
